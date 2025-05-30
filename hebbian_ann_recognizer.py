@@ -1,10 +1,9 @@
 import numpy as np
 import sys
-import os
 
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QPushButton, QLabel, QMessageBox, QHBoxLayout
-from PyQt5.QtGui import QPainter, QPen, QColor, QImage, QPixmap
-from PyQt5.QtCore import Qt, QPoint, QRect, QSize
+from PyQt5.QtGui import QPixmap
+from PyQt5.QtCore import Qt
 
 # Import the DrawingInputManager class from your local file.
 # Make sure 'drawing_input_manager.py' is in the same directory as this script.
@@ -16,7 +15,7 @@ class HebbianANN:
     This network supports multi-class classification using multiple output neurons,
     where each neuron corresponds to a specific class.
     """
-    def __init__(self, input_size: int, output_size: int):
+    def __init__(self, input_size: int, output_size: int, learning_rate: float = 1.0):
         """
         Initializes the Hebbian neural network.
 
@@ -32,7 +31,7 @@ class HebbianANN:
         # Each column in this matrix represents the weight vector for a single output neuron.
         self.weights = np.zeros((input_size, output_size))
         # The learning rate for Hebbian learning. For simple Hebbian, it's often 1.0.
-        self.learning_rate = 1.0
+        self.learning_rate = learning_rate
 
     def train(self, patterns: np.ndarray, targets: np.ndarray):
         """
@@ -122,7 +121,7 @@ class RecognitionApp(QWidget):
         and prepares the Hebbian ANN for training and prediction.
         """
         super().__init__()
-        self.setWindowTitle("Arabic Character Recognizer (هـ, ج)")
+        self.setWindowTitle("Persian Character Recognizer (هـ, ج)")
         # Set the initial window size and position.
         self.setGeometry(100, 100, 500, 750)
 

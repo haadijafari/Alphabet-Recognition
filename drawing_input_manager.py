@@ -2,7 +2,7 @@ import numpy as np
 import sys
 
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QPushButton, QLabel
-from PyQt5.QtGui import QPainter, QPen, QColor, QImage, QPixmap, QTabletEvent # Ensure QTabletEvent is imported
+from PyQt5.QtGui import QPainter, QPen, QImage, QPixmap, QTabletEvent
 from PyQt5.QtCore import Qt, QPoint, QRect, QSize
 
 class DrawingInputManager(QWidget):
