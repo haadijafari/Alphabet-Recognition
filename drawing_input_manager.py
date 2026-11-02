@@ -1,5 +1,7 @@
 import numpy as np
+import os
 import sys
+import tempfile
 
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QPushButton, QLabel
 from PyQt5.QtGui import QPainter, QPen, QImage, QPixmap, QTabletEvent
@@ -12,6 +14,9 @@ class DrawingInputManager(QWidget):
     the canvas and extract a normalized image of the drawn content.
     This version directly paints onto a QWidget for simpler visual updates.
     """
+    # Grayscale values below this count as ink (catches faint, antialiased edges).
+    INK_THRESHOLD = 250
+
     def __init__(self, parent=None, canvas_size=(300, 300), normalized_size=(28, 28)):
         """
         Initializes the drawing canvas.
@@ -36,6 +41,8 @@ class DrawingInputManager(QWidget):
         # Configure the pen for drawing. Black color, round caps and joins for smooth strokes.
         # Initial width will be adjusted by pressure.
         self.pen = QPen(Qt.black, 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        # The stylus eraser end paints white with a wider stroke.
+        self.eraser_pen = QPen(Qt.white, 10, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
 
         # Enable mouse tracking to get events even when buttons aren't pressed (useful for hover, though not used here)
         self.setMouseTracking(True)
@@ -60,32 +67,40 @@ class DrawingInputManager(QWidget):
         Handles specific events from a graphics tablet (like XP-Pen).
         This is crucial for capturing pressure and other tablet-specific data.
         """
-        # Use event.pointerType() to identify the specific tool being used (pen, eraser, cursor)
-        # Qt.PointerType.Pen is the correct enum member for a pen tool.
-        if event.pointerType() == QTabletEvent.PointerType.Pen: # <-- NEW CORRECTED LINE
-            if event.type() == event.TabletPress:
-                self.drawing_active = True
-                self.last_point = event.pos() # Record the starting point of the stroke
-            elif event.type() == event.TabletMove and self.drawing_active:
-                # Draw a line from the last point to the current point on self.image
-                painter = QPainter(self.image)
-                # Adjust pen width based on pen pressure. Max(1, ...) ensures minimum width.
-                # You might need to tune the '10' multiplier for your preference.
-                # event.pressure() ranges from 0.0 to 1.0
+        # Use event.pointerType() to identify the tool being used (pen, eraser, cursor).
+        # PyQt5 exposes these enum members directly on the class (QTabletEvent.Pen),
+        # not through the scoped QTabletEvent.PointerType.Pen form.
+        pointer_type = event.pointerType()
+        if pointer_type not in (QTabletEvent.Pen, QTabletEvent.Eraser):
+            # Other tools (e.g. a puck/cursor): let Qt fall back to synthesized mouse events.
+            event.ignore()
+            return
+
+        is_eraser = pointer_type == QTabletEvent.Eraser
+        if event.type() == event.TabletPress:
+            self.drawing_active = True
+            self.last_point = event.pos() # Record the starting point of the stroke
+        elif event.type() == event.TabletMove and self.drawing_active:
+            # Draw a line from the last point to the current point on self.image
+            painter = QPainter(self.image)
+            # event.pressure() ranges from 0.0 to 1.0. The eraser is wider than the pen
+            # and paints white. You might need to tune the multipliers for your preference.
+            if is_eraser:
+                self.eraser_pen.setWidthF(max(4, event.pressure() * 30))
+                painter.setPen(self.eraser_pen)
+            else:
                 self.pen.setWidthF(max(1, event.pressure() * 10))
                 painter.setPen(self.pen)
-                painter.drawLine(self.last_point, event.pos())
-                self.last_point = event.pos() # Update last point for the next segment
-                painter.end() # End painter on the QImage
-                self.update() # Request a repaint of the widget to show the changes
-            elif event.type() == event.TabletRelease:
-                self.drawing_active = False # Stop drawing when pen is lifted
+            painter.drawLine(self.last_point, event.pos())
+            self.last_point = event.pos() # Update last point for the next segment
+            painter.end() # End painter on the QImage
+            self.update() # Request a repaint of the widget to show the changes
+        elif event.type() == event.TabletRelease:
+            self.drawing_active = False # Stop drawing when the tool is lifted
 
-            event.accept() # Essential to tell Qt that this event has been handled.
-                           # Otherwise, it might be processed as a standard mouse event too.
-        else:
-            # If it's not a pen (e.g., eraser, or a different deviceType if it exists), ignore it.
-            event.ignore()
+        # Accept both pen and eraser events so Qt does not also synthesize
+        # mouse events from them (which would draw black ink via mouseMoveEvent).
+        event.accept()
 
     def mousePressEvent(self, event):
         """
@@ -132,27 +147,18 @@ class DrawingInputManager(QWidget):
                     `self.normalized_output_size`, with white background and black foreground.
                     Returns an empty white image if no drawing is detected.
         """
-        # 1. Find the bounding box of the non-white pixels (the drawn character)
-        min_x, max_x = self.image.width(), 0
-        min_y, max_y = self.image.height(), 0
-        found_drawing = False
+        # 1. Find the bounding box of the non-white pixels (the drawn character).
+        #    Using 250 as threshold to catch faint lines.
+        ink_rows, ink_cols = np.nonzero(self._grayscale_array(self.image) < self.INK_THRESHOLD)
 
-        # Iterate through pixels to find the extent of the drawing
-        for y in range(self.image.height()):
-            for x in range(self.image.width()):
-                # Check for non-white (darker) pixels. Using 250 as threshold to catch faint lines.
-                if self.image.pixelColor(x, y).red() < 250:
-                    min_x = min(min_x, x)
-                    max_x = max(max_x, x)
-                    min_y = min(min_y, y)
-                    max_y = max(max_y, y)
-                    found_drawing = True
-
-        if not found_drawing:
+        if ink_rows.size == 0:
             # If no drawing is detected, return an empty (white) normalized image
             normalized_img = QImage(self.normalized_output_size, QImage.Format_Grayscale8)
             normalized_img.fill(Qt.white)
             return normalized_img
+
+        min_x, max_x = int(ink_cols.min()), int(ink_cols.max())
+        min_y, max_y = int(ink_rows.min()), int(ink_rows.max())
 
         # Add a small padding around the detected character for better context
         padding = 5 # Adjust this value if needed
@@ -189,6 +195,35 @@ class DrawingInputManager(QWidget):
 
         return normalized_img
 
+    def has_drawing(self):
+        """
+        Returns True if the canvas contains any ink (non-white pixels).
+        """
+        return bool((self._grayscale_array(self.image) < self.INK_THRESHOLD).any())
+
+    @staticmethod
+    def _grayscale_array(qimage):
+        """
+        Returns a (height, width) uint8 copy of a QImage's grayscale pixels.
+
+        QImage pads every scanline to a 4-byte boundary, so each row in memory is
+        bytesPerLine() bytes long, which can be larger than width(). The buffer is
+        read row-stride aware and the padding is sliced off.
+        """
+        if qimage.format() != QImage.Format_Grayscale8:
+            # Convert to grayscale if it's not already, for consistent processing
+            qimage = qimage.convertToFormat(QImage.Format_Grayscale8)
+
+        width = qimage.width()
+        height = qimage.height()
+        stride = qimage.bytesPerLine()
+
+        ptr = qimage.constBits()
+        ptr.setsize(height * stride)
+        rows = np.frombuffer(ptr, np.uint8).reshape((height, stride))
+        # Copy so the array does not depend on the QImage's memory staying alive.
+        return rows[:, :width].copy()
+
     def qimage_to_numpy_array(self, qimage):
         """
         Converts a QImage (expected to be grayscale) into a flattened NumPy array.
@@ -202,16 +237,7 @@ class DrawingInputManager(QWidget):
             np.ndarray: A 1D NumPy array (flattened) of pixel values,
                         where 0 is white and 1 is black.
         """
-        if qimage.format() != QImage.Format_Grayscale8:
-            # Convert to grayscale if it's not already, for consistent processing
-            qimage = qimage.convertToFormat(QImage.Format_Grayscale8)
-
-        width = qimage.width()
-        height = qimage.height()
-
-        ptr = qimage.constBits()
-        ptr.setsize(height * width)
-        img_array = np.frombuffer(ptr, np.uint8).reshape((height, width))
+        img_array = self._grayscale_array(qimage)
 
         # Normalize to [0, 1], invert so black = 1, white = 0
         normalized_array = 1.0 - img_array.astype(np.float32) / 255.0
@@ -248,9 +274,12 @@ if __name__ == "__main__":
     def process_and_show():
         # Get the normalized QImage
         normalized_img_q = drawing_manager.get_normalized_image()
-        # Save it to a file for verification during development
-        normalized_img_q.save("output_normalized_input.png")
-        print(f"Normalized image saved to output_normalized_input.png (size: {normalized_img_q.width()}x{normalized_img_q.height()})")
+        # Save it to the system temp directory (not the working directory) for verification
+        output_path = os.path.join(tempfile.gettempdir(), "output_normalized_input.png")
+        if normalized_img_q.save(output_path):
+            print(f"Normalized image saved to {output_path} (size: {normalized_img_q.width()}x{normalized_img_q.height()})")
+        else:
+            print(f"Could not save normalized image to {output_path}")
 
         # Convert the QImage to a NumPy array for your ANN
         numpy_array = drawing_manager.qimage_to_numpy_array(normalized_img_q)
