@@ -1,0 +1,9 @@
+[project]
+name = "alphabet-recognition"
+version = "0.1.0"
+description = "Persian alphabet recognition with a Hebbian neural network"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=2.2.6",
+    "pyqt5>=5.15.11",
+]
